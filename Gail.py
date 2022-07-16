@@ -13,7 +13,7 @@ print(f"Using {device} device")
 TRAJECTORY_LEN = 200
 MAX_STEPS = 10**6
 learning_rate = 0.0001
-
+GAMMA = 0.99
 
 def generator_predict(generator, state, action_space_size):
     with torch.no_grad():
@@ -33,9 +33,10 @@ def update_discriminator(optimizer, discriminator, state_action_pairs_expert, st
         output_expert_p = discriminator.logsigmoid(output_expert)
 
         output_sample = discriminator(state_action_pair_sample)
-        output_sample_p = 1 - torch.exp(discriminator.logsigmoid(output_sample))
+        output_sample_p = discriminator.logsigmoid(output_sample)
+        output_sample_q = torch.log(1 - torch.exp(output_sample_p))
 
-        loss = -(torch.mean(output_expert_p) + torch.mean(torch.log(output_sample_p)))
+        loss = -(torch.mean(output_expert_p) + torch.mean(output_sample_q)) 
         optimizer.zero_grad()
         loss.backward()
         for param in discriminator.parameters():
@@ -45,6 +46,18 @@ def update_discriminator(optimizer, discriminator, state_action_pairs_expert, st
 
     return total_loss/len(state_action_pair_expert)
         
+def discounted_reward(rewards):
+    G = np.zeros(len(rewards))
+    ##Calculate discounted reward
+    cache = 0
+    for t in reversed(range(0, len(rewards))):
+        if rewards[t] != 0: cache = 0
+        cache = cache*GAMMA + rewards[t]
+        G[t] = cache
+    ##Normalize
+    G = (G-np.mean(G))/(np.std(G)+1e-8)
+    return G
+
 
 def update_generator(optimizer, generator, discriminator, state_action_pairs_sample, states, actions):
     total_loss = 0
@@ -54,9 +67,11 @@ def update_generator(optimizer, generator, discriminator, state_action_pairs_sam
         action = actions[i]
         action = action.to(device)
         output = discriminator(state_action_pair)
-        output_p = discriminator.logsigmoid(output)
-
-        loss = -torch.mean(action*log_probs*torch.exp(output_p))
+        output_p = torch.exp(discriminator.logsigmoid(output))
+        Q = discounted_reward(output_p)
+        Q = torch.from_numpy(Q).to(device).float()
+        adv = torch.sum(action*log_probs, dim = 1)
+        loss = -torch.mean(adv*Q)
         optimizer.zero_grad()
         loss.backward()
         for param in generator.parameters():

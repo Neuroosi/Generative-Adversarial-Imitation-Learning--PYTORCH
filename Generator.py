@@ -22,5 +22,5 @@ class Generator(nn.Module):
         x = x.to(device)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
+        x = self.fc3(x)
         return self.logsoftmax(x)

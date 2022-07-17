@@ -6,7 +6,7 @@ import Generator, Discriminator
 from torch._C import device
 from torch import optim
 import torch
-
+from wandb import wandb
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using {device} device")
@@ -70,7 +70,7 @@ def update_generator(optimizer, generator, discriminator, state_action_pairs_sam
         output_p = torch.exp(discriminator.logsigmoid(output))
         Q = discounted_reward(output_p)
         Q = torch.from_numpy(Q).to(device).float()
-        adv = torch.sum(action*log_probs, dim = 1)
+        adv = torch.sum(action*log_probs, dim = 1)/len(state_action_pair)
         loss = -torch.mean(adv*Q)
         optimizer.zero_grad()
         loss.backward()
@@ -134,6 +134,7 @@ def generate_expert_data():
     return state_actions_pairs
 
 def train():
+    wandb.init(project="GAIL", entity="neuroori") 
     expert_data = generate_expert_data()
     generator = Generator.Generator(4, 2).to(device)
     discriminator = Discriminator.Discriminator(5).to(device)
@@ -144,6 +145,7 @@ def train():
         loss_disc = update_discriminator(optimizer_discriminator, discriminator, expert_data, sample_trajectories)
         loss_gen = update_generator(optimizer_generator, generator, discriminator, sample_trajectories, sample_states, sample_actions)
         print("Iteration:",i,"Generator_loss:", loss_gen, "Discriminator_loss:", loss_disc,)
+        wandb.log({"Generator_loss": loss_gen, "Discriminator_loss": loss_disc})
 def main():
     train()
 

@@ -70,7 +70,7 @@ def update_generator(optimizer, generator, discriminator, state_action_pairs_sam
         output_p = torch.exp(discriminator.logsigmoid(output))
         Q = discounted_reward(output_p)
         Q = torch.from_numpy(Q).to(device).float()
-        adv = torch.sum(action*log_probs, dim = 1)/len(state_action_pair)
+        adv = torch.sum(action*log_probs, dim = 1)
         loss = -torch.mean(adv*Q)
         optimizer.zero_grad()
         loss.backward()

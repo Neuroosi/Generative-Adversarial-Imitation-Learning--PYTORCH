@@ -35,12 +35,12 @@ def update_discriminator(optimizer, discriminator, state_action_pairs_expert, st
         state_action_sample = state_action_pairs_sample[m]
         output_expert = discriminator(state_action_expert)
         output_expert_p = discriminator.logsigmoid(output_expert)
+        output_expert_p = torch.log(1- torch.exp(output_expert_p))
 
         output_sample = discriminator(state_action_sample)
         output_sample_p = discriminator.logsigmoid(output_sample)
-        output_sample_q = torch.log(1 - torch.exp(output_sample_p))
 
-        loss = -(torch.mean(output_expert_p) + torch.mean(output_sample_q)) 
+        loss = -(torch.mean(output_expert_p) + torch.mean(output_sample_p)) 
         optimizer.zero_grad()
         total_loss += loss.item()
         loss.backward()
@@ -55,7 +55,6 @@ def discounted_reward(rewards):
     ##Calculate discounted reward
     cache = 0
     for t in reversed(range(0, len(rewards))):
-        if rewards[t] != 0: cache = 0
         cache = cache*GAMMA + rewards[t]
         G[t] = cache
     ##Normalize
@@ -69,6 +68,7 @@ def update_generator(optimizer, generator, discriminator, state_action_pairs_sam
         log_probs = generator(states[m])
         actions_ = actions[m].to(device)
         output = discriminator.logsigmoid(discriminator(state_action_pairs_sample[m]))
+        output = torch.log(1 - torch.exp(output))
         Q = discounted_reward(output)
         Q = torch.from_numpy(Q).to(device).float()
         adv = torch.sum(actions_*log_probs, dim = 1)

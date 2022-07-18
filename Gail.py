@@ -14,6 +14,7 @@ TRAJECTORY_LEN = 200
 MAX_STEPS = 10**6
 learning_rate = 0.0001
 GAMMA = 0.99
+import random
 
 def generator_predict(generator, state, action_space_size):
     with torch.no_grad():
@@ -25,26 +26,29 @@ def generator_predict(generator, state, action_space_size):
 
 def update_discriminator(optimizer, discriminator, state_action_pairs_expert, state_action_pairs_sample):
     total_loss = 0
-    for i in range(len(state_action_pairs_expert)):
-        state_action_pair_expert = state_action_pairs_expert[i]
-        state_action_pair_sample = state_action_pairs_sample[i]
+    batch = random.sample(state_action_pairs_expert, len(state_action_pairs_sample))
+    for m in range(len(state_action_pairs_sample)):
+            
 
-        output_expert = discriminator(state_action_pair_expert)
+        optimizer.zero_grad()
+
+        state_action_expert = batch[m]
+        state_action_sample = state_action_pairs_sample[m]
+        output_expert = discriminator(state_action_expert)
         output_expert_p = discriminator.logsigmoid(output_expert)
 
-        output_sample = discriminator(state_action_pair_sample)
+        output_sample = discriminator(state_action_sample)
         output_sample_p = discriminator.logsigmoid(output_sample)
         output_sample_q = torch.log(1 - torch.exp(output_sample_p))
 
         loss = -(torch.mean(output_expert_p) + torch.mean(output_sample_q)) 
-        optimizer.zero_grad()
+        total_loss += loss.item()
         loss.backward()
         for param in discriminator.parameters():
             param.grad.data.clamp_(-1,1)
         optimizer.step()
-        total_loss += loss.item()
-
-    return total_loss/len(state_action_pair_expert)
+            
+    return total_loss/len(state_action_pairs_sample)
         
 def discounted_reward(rewards):
     G = np.zeros(len(rewards))
@@ -61,24 +65,22 @@ def discounted_reward(rewards):
 
 def update_generator(optimizer, generator, discriminator, state_action_pairs_sample, states, actions):
     total_loss = 0
-    for i in range(len(state_action_pairs_sample)):
-        state_action_pair = state_action_pairs_sample[i]
-        log_probs = generator(states[i])
-        action = actions[i]
-        action = action.to(device)
-        output = discriminator(state_action_pair)
-        output_p = torch.exp(discriminator.logsigmoid(output))
-        Q = discounted_reward(output_p)
-        Q = torch.from_numpy(Q).to(device).float()
-        adv = torch.sum(action*log_probs, dim = 1)
-        loss = -torch.mean(adv*Q)
+    for m in range(len(state_action_pairs_sample)):
         optimizer.zero_grad()
+        log_probs = generator(states[m])
+        actions_ = actions[m].to(device)
+        output = discriminator.logsigmoid(discriminator(state_action_pairs_sample[m]))
+        Q = discounted_reward(output)
+        Q = torch.from_numpy(Q).to(device).float()
+        adv = torch.sum(actions_*log_probs, dim = 1)
+        loss = -torch.mean(adv*Q)
+        total_loss += loss.item()
         loss.backward()
         for param in generator.parameters():
             param.grad.data.clamp_(-1,1)
         optimizer.step()
-        total_loss += loss.item()
-    return total_loss / len(state_action_pairs_sample)
+
+    return total_loss/len(state_action_pairs_sample)
 
 def generate_sample_trajectories(generator, N):
     trajectories= []
@@ -116,11 +118,11 @@ def generate_sample_trajectories(generator, N):
         trajectories_states.append(sub_trajectories_states)
         sub_trajectories_actions = torch.stack(sub_trajectories_actions)
         trajectories_actions.append(sub_trajectories_actions)
-        trajs_mean_reward += total_reward/TRAJECTORY_LEN
+        trajs_mean_reward += total_reward
 
-    print("Episode reward",trajs_mean_reward / N)
+    print("Mean reward",trajs_mean_reward / N)
     env.close()
-    return trajectories, trajectories_states, trajectories_actions
+    return trajectories, trajectories_states, trajectories_actions, trajs_mean_reward / N
 
 def generate_expert_data():
     dataset, _ = get_cartpole()
@@ -141,11 +143,11 @@ def train():
     optimizer_generator = optim.Adam(generator.parameters(), lr = learning_rate)
     optimizer_discriminator = optim.Adam(discriminator.parameters(), lr = learning_rate)
     for i in range(MAX_STEPS):
-        sample_trajectories, sample_states, sample_actions = generate_sample_trajectories(generator, 1582)
+        sample_trajectories, sample_states, sample_actions, reward = generate_sample_trajectories(generator, 200)
         loss_disc = update_discriminator(optimizer_discriminator, discriminator, expert_data, sample_trajectories)
         loss_gen = update_generator(optimizer_generator, generator, discriminator, sample_trajectories, sample_states, sample_actions)
         print("Iteration:",i,"Generator_loss:", loss_gen, "Discriminator_loss:", loss_disc,)
-        wandb.log({"Generator_loss": loss_gen, "Discriminator_loss": loss_disc})
+        wandb.log({"Generator_loss": loss_gen, "Discriminator_loss": loss_disc, "Episode_mean_reward": reward})
 def main():
     train()
 

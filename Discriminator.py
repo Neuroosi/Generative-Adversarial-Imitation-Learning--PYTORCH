@@ -19,7 +19,7 @@ class Discriminator(nn.Module):
 
     def forward(self, x):
         x = x.to(device)
-        x = F.tanh(self.fc1(x))
-        x = F.tanh(self.fc2(x))
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
         x = self.fc3(x)
         return x

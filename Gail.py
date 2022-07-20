@@ -12,7 +12,7 @@ import random
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using {device} device")
 TRAJECTORY_LEN = 500
-MAX_STEPS = 500
+MAX_STEPS = 200
 learning_rate = 0.0001
 GAMMA = 0.99
 KL_LIMES = 0.0015
@@ -100,7 +100,7 @@ def update_generator(optimizer, generator, discriminator, state_action_pairs_sam
         total_loss += loss.item()
     return total_loss/len(state_action_pairs_sample)
 
-def generate_sample_trajectories(generator, N, render):
+def generate_sample_trajectories(generator, N, render, verbose):
     trajectories= []
     trajectories_states = []
     trajectories_actions = []
@@ -130,7 +130,8 @@ def generate_sample_trajectories(generator, N, render):
             total_reward += reward
             if done:
                 break
-
+        if verbose:
+            print("Reward", total_reward)
         sub_trajectories = torch.stack(sub_trajectories)
         trajectories.append(sub_trajectories)
         sub_trajectories_states = torch.stack(sub_trajectories_states)
@@ -154,20 +155,31 @@ def generate_expert_data():
         state_actions_pairs.append(state_action_pair)
     return state_actions_pairs
 
+def update_linear_schedule(optimizer, epoch, total_num_epochs, initial_lr):
+    """Decreases the learning rate linearly"""
+    lr = initial_lr - (initial_lr * (epoch / float(total_num_epochs)))
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+    print("LEARNING_RATE", lr)
+
 def train():
-    wandb.init(project="GAIL", entity="neuroori") 
+    wandb.init(project="GAIL_", entity="neuroori") 
     expert_data = generate_expert_data()
     generator = Generator.Generator(4, 2).to(device)
     discriminator = Discriminator.Discriminator(5).to(device)
     optimizer_generator = optim.Adam(generator.parameters(), lr = learning_rate)
     optimizer_discriminator = optim.Adam(discriminator.parameters(), lr = learning_rate)
     for i in range(MAX_STEPS):
-        sample_trajectories, sample_states, sample_actions, reward = generate_sample_trajectories(generator, 500, False)
+        sample_trajectories, sample_states, sample_actions, reward = generate_sample_trajectories(generator, 200, False, False)
         loss_disc = update_discriminator(optimizer_discriminator, discriminator, expert_data, sample_trajectories)
         loss_gen = update_generator(optimizer_generator, generator, discriminator, sample_trajectories, sample_states, sample_actions)
         print("Iteration:",i,"Generator_loss:", loss_gen, "Discriminator_loss:", loss_disc,)
         wandb.log({"Generator_loss": loss_gen, "Discriminator_loss": loss_disc, "Episode_mean_reward": reward})
-    generate_sample_trajectories(generator, 200, True)
+        update_linear_schedule(optimizer_generator,i , MAX_STEPS, learning_rate)
+        update_linear_schedule(optimizer_discriminator,i , MAX_STEPS, learning_rate)
+    torch.save(generator.state_dict(), "geneator.pth")
+    torch.save(discriminator.state_dict(), "discriminator.pth")
+    generate_sample_trajectories(generator, 200, True, True)
 def main():
     train()
 

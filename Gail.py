@@ -23,7 +23,7 @@ EPSILON = 0.2
 BETA = 1
 KL_LIMES = 0.015
 TOTAL_STEPS = 4096
-EXPERT_STEPS = 5*10**6
+EXPERT_STEPS = 2*10**6
 IS_DISCRETE = False
 EARLY_STOPPING = False
 MAX_ITERS_GEN = 4
@@ -48,7 +48,7 @@ def generator_predict(generator, generator_value, state, action_space_size):
 def update_discriminator(optimizer, discriminator, state_action_pairs_expert, state_action_pairs_sample):
     total_loss = 0
     batch = random.sample(state_action_pairs_expert, len(state_action_pairs_sample))
-    batch = torch.stack(batch)
+    batch = torch.stack(batch).to(device)
     for iter in range(MAX_ITERS_DISC):
 
 
@@ -90,7 +90,7 @@ def discounted_reward(rewards, terminal):
     ##Normalize
     G = (G-np.mean(G))/(np.std(G)+1e-8)
     return G
-    
+
 def update_generator_ppo(optimizer, generator,  generator_value, discriminator, state_action_pairs_sample, states, actions, old_values, old_probs, terminal):
     total_loss = 0
     total_entropy = 0
@@ -218,7 +218,7 @@ def generate_sample_trajectories(generator, generator_value, render, verbose, ga
                 observation, reward, done, info = env.step(action)
             else:
                 observation, reward, done, info = env.step(action.cpu().detach().numpy())
-            state = torch.tensor(observation)
+            state = torch.tensor(observation).to(device)
             trajectories_states.append(state)
             trajectories_terminal.append(torch.tensor(done))
             trajectories_values.append(values)
@@ -231,7 +231,7 @@ def generate_sample_trajectories(generator, generator_value, render, verbose, ga
                 trajectories_actions.append(action)
                 trajectories_state_action.append(torch.cat((state, action.unsqueeze(0)), 0))
             else:
-                trajectories_state_action.append(torch.cat((state.to(device), action.to(device)), 0))
+                trajectories_state_action.append(torch.cat((state, action), 0))
                 trajectories_actions.append(action)
             if render:
                 env.render()
@@ -254,7 +254,7 @@ def generate_sample_trajectories(generator, generator_value, render, verbose, ga
     trajectories_values = torch.stack(trajectories_values)
     trajectories_oldprobs = torch.stack(trajectories_oldprobs)
     trajectories_terminal = torch.stack(trajectories_terminal)
-    trajectories_state_action = torch.stack(trajectories_state_action)
+    trajectories_state_action = torch.stack(trajectories_state_action).to(device)
     return trajectories_state_action, trajectories_states, trajectories_actions, trajectories_values, trajectories_oldprobs, trajectories_terminal,  trajs_mean_reward / max(1,episode)
 
 def generate_exprert_trajectories(game, load):
@@ -274,7 +274,7 @@ def generate_exprert_trajectories(game, load):
     while True:
         action, _states = model.predict(obs)
         state = torch.tensor(obs)
-        state_action_pairs.append(torch.cat((state.to(device), torch.from_numpy(action).to(device).float()), 0))
+        state_action_pairs.append(torch.cat((state, torch.from_numpy(action).float()), 0))
         obs, reward, done, info = env.step(action)
         total_reward += reward
         if done:

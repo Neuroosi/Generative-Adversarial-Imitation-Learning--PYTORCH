@@ -23,11 +23,12 @@ EPSILON = 0.2
 BETA = 1
 KL_LIMES = 0.015
 TOTAL_STEPS = 4096
-EXPERT_STEPS = 2*10**6
+EXPERT_STEPS = 3*10**6
 IS_DISCRETE = False
 EARLY_STOPPING = False
 MAX_ITERS_GEN = 4
-MAX_ITERS_DISC = 1
+MAX_ITERS_GEN_VALUE = 80
+MAX_ITERS_DISC = 2
 
 def generator_predict(generator, generator_value, state, action_space_size):
     with torch.no_grad():
@@ -45,7 +46,7 @@ def generator_predict(generator, generator_value, state, action_space_size):
         log_probs = dist.log_prob(action)
         return action, values, log_probs
 
-def update_discriminator(optimizer, discriminator, state_action_pairs_expert, state_action_pairs_sample):
+def update_discriminator(optimizer,  discriminator, state_action_pairs_expert, state_action_pairs_sample):
     total_loss = 0
     batch = random.sample(state_action_pairs_expert, len(state_action_pairs_sample))
     batch = torch.stack(batch).to(device)
@@ -91,27 +92,12 @@ def discounted_reward(rewards, terminal):
     G = (G-np.mean(G))/(np.std(G)+1e-8)
     return G
 
-def update_generator_ppo(optimizer, generator,  generator_value, discriminator, state_action_pairs_sample, states, actions, old_values, old_probs, terminal):
-    total_loss = 0
+def update_generator_ppo_policy(optimizer, generator,  generator_value, discriminator, state_action_pairs_sample, states, actions, old_values, old_probs, terminal):
     total_entropy = 0
-    total_kl_app = 0
     total_test_acc = 0
     total_policy_loss = 0
-    total_value_loss = 0
     updates = 0
     indexs = np.arange(len(states))
-    #old_dists = []
-    #for i in range(len(states)):
-    #    mu = generator(states[i])
-    #    sigma = torch.exp(generator.log_std)
-        #diag = [torch.eye(4).to(device) for i in range(len(states))]
-        #diag = torch.stack(diag).to(device)
-        #for i in range(len(sigma)):
-        #    diag[i] *= sigma[i]**2
-    #    diag = torch.eye(4).to(device)*sigma**2
-    #    dist = torch.distributions.MultivariateNormal(mu, diag.to(device))
-     #   old_dists.append(torch.tensor(dist))
-    #old_dists = torch.stack(old_dists)
     with torch.no_grad():
         r = discriminator.sigmoid(discriminator(state_action_pairs_sample))
         test_accuracy = (r < 0.5).float()
@@ -158,41 +144,63 @@ def update_generator_ppo(optimizer, generator,  generator_value, discriminator, 
                 pred_ratio = torch.exp(log_probs - old_prob)
                 clip = torch.clamp(pred_ratio, 1-EPSILON, 1+ EPSILON)
                 policy_loss = -torch.mean(torch.min(pred_ratio*adv, clip*adv))
-                ##values_loss
-                clip = old_value + (values - old_value).clamp(-EPSILON, EPSILON)
-                values_loss = adv**2
-                clip_loss = (clip-values)**2
-                values_loss = torch.max(values_loss, clip_loss)
-                values_loss = torch.mean(values_loss)
                 ##Entropu
                 entropy_loss = torch.mean(entropies)
-                loss = BETA*values_loss + policy_loss -ALPHA*entropy_loss
+
             optimizer.zero_grad()
-            loss.backward()
+            policy_loss.backward()
             torch.nn.utils.clip_grad_norm_(generator.parameters(), 0.5)
+            optimizer.step()
+            total_policy_loss += policy_loss.item()
+            lower_M += 64
+            upper_M += 64
+            updates += 1
+            total_entropy += entropy_loss.item()
+
+    return total_entropy/(updates), total_test_acc/(updates), total_policy_loss/(updates)
+
+def update_generator_ppo_values(optimizer,  generator_value, discriminator, state_action_pairs_sample, states, actions, old_values, terminal):
+    total_test_acc = 0
+    total_value_loss = 0
+    updates = 0
+    indexs = np.arange(len(states))
+    with torch.no_grad():
+        r = discriminator.sigmoid(discriminator(state_action_pairs_sample))
+        test_accuracy = (r < 0.5).float()
+        test_accuracy = torch.sum(test_accuracy)/len(test_accuracy)
+        total_test_acc += test_accuracy
+        r = -torch.log(r+1e-08)
+        r = torch.squeeze(r)
+    Q = discounted_reward(r, terminal)
+    Q = torch.from_numpy(Q).to(device).float()
+
+    for iters in range(MAX_ITERS_GEN_VALUE):
+        np.random.shuffle(indexs)
+        lower_M = 0
+        upper_M = 64
+        for i in range(64):
+            index = indexs[lower_M: upper_M]
+            actions_ = actions[index].to(device)
+            old_value = old_values[index]
+            Q_ = Q[index]
+            values = generator_value(states[index])
+            adv = (Q_ - values).to(device)
+            ##values_loss
+            clip = old_value + (values - old_value).clamp(-EPSILON, EPSILON)
+            values_loss = (adv)**2
+            clip_loss = (clip-values)**2
+            values_loss = torch.max(values_loss, clip_loss)
+            values_loss = torch.mean(values_loss)
+            #loss = BETA*values_loss + policy_loss -ALPHA*entropy_loss
+            optimizer.zero_grad()
+            values_loss.backward()
             optimizer.step()
             lower_M += 64
             upper_M += 64
             updates += 1
-            total_loss += loss.item()
-            total_entropy += entropy_loss.item()
-            total_policy_loss += policy_loss.item()
             total_value_loss += values_loss.item()
-            if EARLY_STOPPING:
-                if IS_DISCRETE:
-                    updated_log_probs = generator(states[index])
-                    kl_app = 0.5*(updated_log_probs - log_probs)**2
-                    kl_app = torch.mean(kl_app)
-                    total_kl_app += kl_app
-                else:
-                    kl_app = torch.distributions.kl_divergence(dist, old_dist)
-                    kl_app = torch.mean(torch.tensor(kl_app))
-                    total_kl_app += kl_app
-                #if total_kl_app > KL_LIMES:
-                #    #print("Breaking at step" , i , m)
-                #    break
     
-    return total_loss/(updates), total_entropy/(updates), total_test_acc/(updates), total_policy_loss/(updates), total_value_loss/(updates), total_kl_app/(updates)
+    return total_value_loss/(updates)
 
 def generate_sample_trajectories(generator, generator_value, render, verbose, game):
     trajectories_states = []
@@ -303,20 +311,20 @@ def train():
     generator_value = value_net.value_net(24).to(device)
     generator = Generator.Generator(24, 4, False).to(device)
     discriminator = Discriminator.Discriminator(28).to(device)
-    optimizer_generator = optim.Adam(([
-            {"params": generator.parameters(), "lr": learning_rate_gen},
-            {"params": generator_value.parameters(), "lr": learning_rate_gen_value}
-        ]))
+    optimizer_generator = optim.Adam( generator.parameters(),  learning_rate_gen)
+    optimizer_generator_value = optim.Adam( generator_value.parameters(), learning_rate_gen_value)
     optimizer_discriminator = optim.Adam(discriminator.parameters(), lr = learning_rate_disc)
     expert_data = generate_exprert_trajectories(game, True)
     for i in range(MAX_STEPS):
         sample_state_actions, sample_states, sample_actions, sample_values, sample_probs, sample_terminals ,reward = generate_sample_trajectories(generator, generator_value,  False, False, game)
         loss_disc = update_discriminator(optimizer_discriminator, discriminator, expert_data, sample_state_actions)
-        loss_gen, entropy_gen, total_test_acc, policy_loss, value_loss, kl = update_generator_ppo(optimizer_generator, generator,generator_value, discriminator, sample_state_actions, sample_states, sample_actions, sample_values, sample_probs, sample_terminals)
-        print("Iteration:",i,"Generator_loss:", loss_gen, "Entropy_gen:", entropy_gen ,
-         "Discriminator_loss:", loss_disc, "total_test_acc", total_test_acc)
-        wandb.log({"Generator_loss": loss_gen, "Discriminator_loss": loss_disc, "Episode_mean_reward": reward, "total_test_acc":total_test_acc
-        ,"policy_loss": policy_loss, "entropy": entropy_gen, "value_loss": value_loss, "kl_div":kl})
+        entropy_gen, total_test_acc, policy_loss = update_generator_ppo_policy(optimizer_generator ,generator,generator_value, discriminator, sample_state_actions, sample_states, sample_actions, sample_values, sample_probs, sample_terminals)
+        value_loss = update_generator_ppo_values(optimizer_generator_value, generator_value, discriminator,sample_state_actions, sample_states, sample_actions, sample_values, sample_terminals)
+        print("Iteration:",i, "Entropy_gen:", entropy_gen ,
+         "Discriminator_loss:", loss_disc, "total_test_acc", total_test_acc
+         ,"policy_loss", policy_loss, "values_loss",value_loss)
+        wandb.log({ "Discriminator_loss": loss_disc, "Episode_mean_reward": reward, "total_test_acc":total_test_acc
+        ,"policy_loss": policy_loss, "entropy": entropy_gen, "value_loss": value_loss})
         update_linear_schedule(optimizer_generator,i , MAX_STEPS, learning_rate_gen)
         update_linear_schedule(optimizer_discriminator,i , MAX_STEPS, learning_rate_disc)
     torch.save(generator.state_dict(), game + "_geneator.pth")

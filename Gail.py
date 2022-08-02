@@ -14,21 +14,17 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using {device} device")
 TRAJECTORY_LEN = 4096
 MAX_STEPS = 1000
-learning_rate_disc = 0.0003
-learning_rate_gen = 0.0001
+learning_rate_disc = 0.003
+learning_rate_gen = 0.0003
 learning_rate_gen_value = 0.001
 GAMMA = 0.99
-ALPHA = 0.001
 EPSILON = 0.2
-BETA = 1
-KL_LIMES = 0.015
 TOTAL_STEPS = 4096
 EXPERT_STEPS = 3*10**6
 IS_DISCRETE = False
-EARLY_STOPPING = False
-MAX_ITERS_GEN = 4
-MAX_ITERS_GEN_VALUE = 80
-MAX_ITERS_DISC = 2
+MAX_ITERS_GEN = 40
+MAX_ITERS_GEN_VALUE = 50
+MAX_ITERS_DISC = 1
 
 def generator_predict(generator, generator_value, state, action_space_size):
     with torch.no_grad():
@@ -117,7 +113,6 @@ def update_generator_ppo_policy(optimizer, generator,  generator_value, discrimi
             actions_ = actions[index].to(device)
             old_value = old_values[index]
             old_prob = old_probs[index]
-            #old_dist = old_dists[index]
             Q_ = Q[index]
             if IS_DISCRETE:
                 log_probs = generator(states)
@@ -125,7 +120,8 @@ def update_generator_ppo_policy(optimizer, generator,  generator_value, discrimi
                 entropies = dist.entropy()
             else:
                 mu = generator(states[index])
-                values = generator_value(states[index])
+                with torch.no_grad():
+                    values = generator_value(states[index])
                 sigma = torch.exp(generator.log_std)
                 diag = [torch.eye(4).to(device) for i in range(len(actions_))]
                 diag = torch.stack(diag).to(device)
@@ -191,9 +187,10 @@ def update_generator_ppo_values(optimizer,  generator_value, discriminator, stat
             clip_loss = (clip-values)**2
             values_loss = torch.max(values_loss, clip_loss)
             values_loss = torch.mean(values_loss)
-            #loss = BETA*values_loss + policy_loss -ALPHA*entropy_loss
+
             optimizer.zero_grad()
             values_loss.backward()
+            torch.nn.utils.clip_grad_norm_(generator_value.parameters(), 1)
             optimizer.step()
             lower_M += 64
             upper_M += 64
@@ -327,6 +324,7 @@ def train():
         ,"policy_loss": policy_loss, "entropy": entropy_gen, "value_loss": value_loss})
         update_linear_schedule(optimizer_generator,i , MAX_STEPS, learning_rate_gen)
         update_linear_schedule(optimizer_discriminator,i , MAX_STEPS, learning_rate_disc)
+        update_linear_schedule(optimizer_generator_value,i , MAX_STEPS, learning_rate_gen_value)
     torch.save(generator.state_dict(), game + "_geneator.pth")
     torch.save(discriminator.state_dict(), game + "_discriminator.pth")
     generate_sample_trajectories(generator, generator_value, True, True, game)

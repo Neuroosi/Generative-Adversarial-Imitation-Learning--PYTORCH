@@ -22,8 +22,8 @@ EPSILON = 0.2
 TOTAL_STEPS = 4096
 EXPERT_STEPS = 3*10**6
 IS_DISCRETE = False
-MAX_ITERS_GEN = 40
-MAX_ITERS_GEN_VALUE = 50
+MAX_ITERS_GEN = 4
+MAX_ITERS_GEN_VALUE = 10
 MAX_ITERS_DISC = 1
 
 def generator_predict(generator, generator_value, state, action_space_size):

@@ -219,11 +219,12 @@ def generate_sample_trajectories(generator, generator_value, render, verbose, ga
         total_reward = 0
         for step in range(TRAJECTORY_LEN):
             action, values, logprobs = generator_predict(generator, generator_value, observation, action_space_size)
+            prev_obs = observation
             if IS_DISCRETE:
                 observation, reward, done, info = env.step(action)
             else:
                 observation, reward, done, info = env.step(action.cpu().detach().numpy())
-            state = torch.tensor(observation).to(device)
+            state = torch.tensor(prev_obs).to(device)
             trajectories_states.append(state)
             trajectories_terminal.append(torch.tensor(done))
             trajectories_values.append(values)

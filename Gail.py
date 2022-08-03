@@ -8,7 +8,7 @@ from wandb import wandb
 import random
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
-import copy
+from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using {device} device")
@@ -20,7 +20,7 @@ learning_rate_gen_value = 0.001
 GAMMA = 0.99
 EPSILON = 0.2
 TOTAL_STEPS = 4096
-EXPERT_STEPS = 10000 #3*10**6
+EXPERT_STEPS = 3*10**6
 IS_DISCRETE = False
 MAX_ITERS_GEN = 10
 MAX_ITERS_GEN_VALUE = 10
@@ -266,9 +266,10 @@ def generate_sample_trajectories(generator, generator_value, render, verbose, ga
 def generate_exprert_trajectories(game, load):
     if load is False:
         env = make_vec_env(game, n_envs=4)
-
+        callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=300, verbose=1)
+        eval_callback = EvalCallback(env, callback_on_new_best=callback_on_best, verbose=1)
         model = PPO("MlpPolicy", env, verbose=1)
-        model.learn(total_timesteps=5*10**6)
+        model.learn(total_timesteps=10*10**6, callback=eval_callback)
         model.save("expert" + game)
     else:
         model = PPO.load("expert" + game)

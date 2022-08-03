@@ -20,9 +20,9 @@ learning_rate_gen_value = 0.001
 GAMMA = 0.99
 EPSILON = 0.2
 TOTAL_STEPS = 4096
-EXPERT_STEPS = 3*10**6
+EXPERT_STEPS = 10000 #3*10**6
 IS_DISCRETE = False
-MAX_ITERS_GEN = 4
+MAX_ITERS_GEN = 10
 MAX_ITERS_GEN_VALUE = 10
 MAX_ITERS_DISC = 1
 
@@ -133,7 +133,7 @@ def update_generator_ppo_policy(optimizer, generator,  generator_value, discrimi
             if IS_DISCRETE:
                 adv = torch.sum(actions_*log_probs, dim = 1)
                 entropy_loss = torch.mean(entropies)
-                loss = -torch.mean(adv*Q)-ALPHA*entropy_loss
+                loss = -torch.mean(adv*Q)
             else:
                 adv = (Q_ - values).to(device)
                 ##policy_loss
@@ -153,7 +153,7 @@ def update_generator_ppo_policy(optimizer, generator,  generator_value, discrimi
             updates += 1
             total_entropy += entropy_loss.item()
 
-    return total_entropy/(updates), total_test_acc/(updates), total_policy_loss/(updates)
+    return total_entropy/(updates), total_test_acc, total_policy_loss/(updates)
 
 def update_generator_ppo_values(optimizer,  generator_value, discriminator, state_action_pairs_sample, states, actions, old_values, terminal):
     total_test_acc = 0

@@ -23,7 +23,7 @@ TOTAL_STEPS = 4096
 EXPERT_STEPS = 3*10**6
 EXPERT_REWARD_LIMES = 200
 LOAD_EXPERT = True
-IS_DISCRETE = False
+IS_DISCRETE = True
 MAX_ITERS_GEN = 10 ## 10 for cts case
 MAX_ITERS_GEN_VALUE = 10 ## 10 for cts case
 MAX_ITERS_DISC = 1
@@ -191,7 +191,7 @@ def update_generator_ppo_values(optimizer,  generator_value, discriminator, stat
             old_value = old_values[index]
             Q_ = Q[index]
             values = generator_value(states[index])
-            adv = (Q_ - values).to(device)
+            adv = (Q_ - values.squeeze()).to(device)
             ##values_loss
             clip = old_value + (values - old_value).clamp(-EPSILON, EPSILON)
             values_loss = (adv)**2

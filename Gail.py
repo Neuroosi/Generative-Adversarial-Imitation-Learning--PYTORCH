@@ -21,23 +21,30 @@ GAMMA = 0.99
 EPSILON = 0.2
 TOTAL_STEPS = 4096
 EXPERT_STEPS = 3*10**6
+EXPERT_REWARD_LIMES = 200
+LOAD_EXPERT = True
 IS_DISCRETE = False
-MAX_ITERS_GEN = 10
-MAX_ITERS_GEN_VALUE = 10
+MAX_ITERS_GEN = 10 ## 10 for cts case
+MAX_ITERS_GEN_VALUE = 10 ## 10 for cts case
 MAX_ITERS_DISC = 1
+ACTION_SPACE = 4
+OBS_SPACE = 24
+GAME = "BipedalWalker-v3"
+#GAME = "LunarLander-v2"
 
 def generator_predict(generator, generator_value, state, action_space_size):
     with torch.no_grad():
         if IS_DISCRETE:
             logprob = generator(torch.from_numpy(state).float())
+            values = generator_value(torch.from_numpy(state).float())
             prob = torch.exp(logprob)
             prob = prob.cpu().detach().numpy()
             prob = np.squeeze(prob)
-            return np.random.choice(action_space_size, p = prob), logprob
+            return np.random.choice(action_space_size, p = prob), values, logprob
         mu = generator(torch.from_numpy(state).float())
         values = generator_value(torch.from_numpy(state).float())
         sigma = torch.exp(generator.log_std)
-        dist = torch.distributions.MultivariateNormal(mu, torch.eye(4).to(device)*sigma**2)
+        dist = torch.distributions.MultivariateNormal(mu, torch.eye(action_space_size).to(device)*sigma**2)
         action = dist.sample()
         log_probs = dist.log_prob(action)
         return action, values, log_probs
@@ -46,6 +53,7 @@ def update_discriminator(optimizer,  discriminator, state_action_pairs_expert, s
     total_loss = 0
     batch = random.sample(state_action_pairs_expert, len(state_action_pairs_sample))
     batch = torch.stack(batch).to(device)
+
     for iter in range(MAX_ITERS_DISC):
 
 
@@ -88,7 +96,7 @@ def discounted_reward(rewards, terminal):
     G = (G-np.mean(G))/(np.std(G)+1e-8)
     return G
 
-def update_generator_ppo_policy(optimizer, generator,  generator_value, discriminator, state_action_pairs_sample, states, actions, old_values, old_probs, terminal):
+def update_generator_ppo_policy(optimizer, generator,  generator_value, discriminator, state_action_pairs_sample, states, actions, old_values, old_probs, terminal, action_space_size):
     total_entropy = 0
     total_test_acc = 0
     total_policy_loss = 0
@@ -114,16 +122,18 @@ def update_generator_ppo_policy(optimizer, generator,  generator_value, discrimi
             old_value = old_values[index]
             old_prob = old_probs[index]
             Q_ = Q[index]
+            with torch.no_grad():
+                values = generator_value(states[index])
+            adv = (Q_ - values.squeeze()).to(device)
+
             if IS_DISCRETE:
-                log_probs = generator(states)
+                log_probs = generator(states[index])
                 dist = torch.distributions.Categorical(torch.exp(log_probs))
                 entropies = dist.entropy()
             else:
                 mu = generator(states[index])
-                with torch.no_grad():
-                    values = generator_value(states[index])
                 sigma = torch.exp(generator.log_std)
-                diag = [torch.eye(4).to(device) for i in range(len(actions_))]
+                diag = [torch.eye(action_space_size).to(device) for i in range(len(actions_))]
                 diag = torch.stack(diag).to(device)
                 for i in range(len(sigma)):
                     diag[i] *= sigma[i]**2
@@ -131,11 +141,12 @@ def update_generator_ppo_policy(optimizer, generator,  generator_value, discrimi
                 log_probs = dist.log_prob(actions_)
                 entropies = dist.entropy()
             if IS_DISCRETE:
-                adv = torch.sum(actions_*log_probs, dim = 1)
                 entropy_loss = torch.mean(entropies)
-                loss = -torch.mean(adv*Q)
+                pred_ratio = torch.exp(log_probs - old_prob)*actions_
+                pred_ratio = torch.sum(pred_ratio, dim = 1)
+                clip = torch.clamp(pred_ratio, 1-EPSILON, 1+ EPSILON)
+                policy_loss = -torch.mean(torch.min(pred_ratio*adv, clip*adv))
             else:
-                adv = (Q_ - values).to(device)
                 ##policy_loss
                 pred_ratio = torch.exp(log_probs - old_prob)
                 clip = torch.clamp(pred_ratio, 1-EPSILON, 1+ EPSILON)
@@ -199,7 +210,7 @@ def update_generator_ppo_values(optimizer,  generator_value, discriminator, stat
     
     return total_value_loss/(updates)
 
-def generate_sample_trajectories(generator, generator_value, render, verbose, game):
+def generate_sample_trajectories(generator, generator_value, render, verbose, game, action_space_size):
     trajectories_states = []
     trajectories_actions = []
     trajectories_values = []
@@ -209,10 +220,6 @@ def generate_sample_trajectories(generator, generator_value, render, verbose, ga
     env = gym.make(game)
     steps = 0
     episode = 0
-    if IS_DISCRETE:
-        action_space_size = env.action_space.n
-    else:
-        action_space_size = -1
     trajs_mean_reward = 0
     while steps < TOTAL_STEPS:
         observation = env.reset()
@@ -232,10 +239,10 @@ def generate_sample_trajectories(generator, generator_value, render, verbose, ga
             if IS_DISCRETE:
                 cache = np.zeros(action_space_size)
                 cache[action] = 1
-                cache = torch.tensor(cache)
-                action = torch.tensor(action)
-                trajectories_actions.append(action)
-                trajectories_state_action.append(torch.cat((state, action.unsqueeze(0)), 0))
+                cache = torch.tensor(cache).to(device)
+                #action = torch.tensor([action]).to(device)
+                trajectories_actions.append(cache)
+                trajectories_state_action.append(torch.cat((state, cache.float()), 0))
             else:
                 trajectories_state_action.append(torch.cat((state, action), 0))
                 trajectories_actions.append(action)
@@ -263,10 +270,10 @@ def generate_sample_trajectories(generator, generator_value, render, verbose, ga
     trajectories_state_action = torch.stack(trajectories_state_action).to(device)
     return trajectories_state_action, trajectories_states, trajectories_actions, trajectories_values, trajectories_oldprobs, trajectories_terminal,  trajs_mean_reward / max(1,episode)
 
-def generate_exprert_trajectories(game, load):
+def generate_exprert_trajectories(game, load, action_space_size):
     if load is False:
         env = make_vec_env(game, n_envs=4)
-        callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=300, verbose=1)
+        callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=EXPERT_REWARD_LIMES, verbose=1)
         eval_callback = EvalCallback(env, callback_on_new_best=callback_on_best, verbose=1)
         model = PPO("MlpPolicy", env, verbose=1)
         model.learn(total_timesteps=10*10**6, callback=eval_callback)
@@ -281,7 +288,13 @@ def generate_exprert_trajectories(game, load):
     while True:
         action, _states = model.predict(obs)
         state = torch.tensor(obs)
-        state_action_pairs.append(torch.cat((state, torch.from_numpy(action).float()), 0))
+        if IS_DISCRETE:
+            cache = np.zeros(action_space_size)
+            cache[action] = 1
+            cache = torch.tensor(cache)
+            state_action_pairs.append(torch.cat((state, cache.float()), 0))
+        else:
+            state_action_pairs.append(torch.cat((state, torch.from_numpy(action).float()), 0))
         obs, reward, done, info = env.step(action)
         total_reward += reward
         if done:
@@ -304,20 +317,20 @@ def update_linear_schedule(optimizer, epoch, total_num_epochs, initial_lr):
         param_group['lr'] = lr
 
 def train():
-    game = "BipedalWalker-v3"
-    #game = "LunarLander-v2"
+    game = GAME
+    action_space_size = ACTION_SPACE
     wandb.init(project="GAIL_" + game, entity="neuroori")
-    generator_value = value_net.value_net(24).to(device)
-    generator = Generator.Generator(24, 4, False).to(device)
-    discriminator = Discriminator.Discriminator(28).to(device)
+    generator_value = value_net.value_net(OBS_SPACE).to(device)
+    generator = Generator.Generator(OBS_SPACE, ACTION_SPACE, IS_DISCRETE).to(device)
+    discriminator = Discriminator.Discriminator(ACTION_SPACE + OBS_SPACE, IS_DISCRETE).to(device)
     optimizer_generator = optim.Adam( generator.parameters(),  learning_rate_gen)
     optimizer_generator_value = optim.Adam( generator_value.parameters(), learning_rate_gen_value)
     optimizer_discriminator = optim.Adam(discriminator.parameters(), lr = learning_rate_disc)
-    expert_data = generate_exprert_trajectories(game, True)
+    expert_data = generate_exprert_trajectories(game, LOAD_EXPERT, action_space_size)
     for i in range(MAX_STEPS):
-        sample_state_actions, sample_states, sample_actions, sample_values, sample_probs, sample_terminals ,reward = generate_sample_trajectories(generator, generator_value,  False, False, game)
+        sample_state_actions, sample_states, sample_actions, sample_values, sample_probs, sample_terminals ,reward = generate_sample_trajectories(generator, generator_value,  False, False, game, action_space_size)
         loss_disc = update_discriminator(optimizer_discriminator, discriminator, expert_data, sample_state_actions)
-        entropy_gen, total_test_acc, policy_loss = update_generator_ppo_policy(optimizer_generator ,generator,generator_value, discriminator, sample_state_actions, sample_states, sample_actions, sample_values, sample_probs, sample_terminals)
+        entropy_gen, total_test_acc, policy_loss = update_generator_ppo_policy(optimizer_generator ,generator,generator_value, discriminator, sample_state_actions, sample_states, sample_actions, sample_values, sample_probs, sample_terminals, action_space_size)
         value_loss = update_generator_ppo_values(optimizer_generator_value, generator_value, discriminator,sample_state_actions, sample_states, sample_actions, sample_values, sample_terminals)
         print("Iteration:",i, "Entropy_gen:", entropy_gen ,
          "Discriminator_loss:", loss_disc, "total_test_acc", total_test_acc
@@ -329,7 +342,7 @@ def train():
         update_linear_schedule(optimizer_generator_value,i , MAX_STEPS, learning_rate_gen_value)
     torch.save(generator.state_dict(), game + "_geneator.pth")
     torch.save(discriminator.state_dict(), game + "_discriminator.pth")
-    generate_sample_trajectories(generator, generator_value, True, True, game)
+    generate_sample_trajectories(generator, generator_value, True, True, game, action_space_size)
 def main():
     train()
 

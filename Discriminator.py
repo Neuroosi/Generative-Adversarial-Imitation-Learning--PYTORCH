@@ -7,7 +7,7 @@ print(f"Using {device} device")
 
 class Discriminator(nn.Module):
 
-    def __init__(self, input_dim):
+    def __init__(self, input_dim, IS_DISCRETE):
         super(Discriminator, self).__init__()
         self.fc1 = nn.Linear(input_dim, 50)
         #torch.nn.init.kaiming_uniform_(self.fc1.weight)
@@ -19,7 +19,8 @@ class Discriminator(nn.Module):
         self.logsigmoid = nn.LogSigmoid()
         self.sigmoid = nn.Sigmoid()
         self.tanh = nn.Tanh()
-
+        self.discrete = IS_DISCRETE
+        
     def forward(self, x):
         x = x.to(device)
         x = self.tanh(self.fc1(x))

@@ -28,9 +28,9 @@ class Generator(nn.Module):
         x = x.to(device)
         x = self.tanh(self.fc1(x))
         x = self.tanh(self.fc2(x))
-        x = self.tanh(self.fc3(x))
         if self.discrete:
             x = self.fc3_discrete(x)
             return self.logsoftmax(x)
+        x = self.tanh(self.fc3(x))
         x = self.fc3_cts(x)
         return x
